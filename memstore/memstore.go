@@ -7,15 +7,16 @@ import (
 	"github.com/zirvaorg/ratelimit"
 )
 
-// Options represents the configuration options for the LocalStore.
+// Options represents the configuration options for the MemStore.
 type Options struct {
-	Rate      time.Duration
-	Limit     int
-	BlockTime time.Duration
+	Rate            time.Duration
+	Limit           int
+	BlockTime       time.Duration
+	CleanupInterval time.Duration
 }
 
-// LocalStore holds rate limit data in-memory.
-type LocalStore struct {
+// MemStore holds rate limit data in memory.
+type MemStore struct {
 	sync.Mutex
 	options  Options
 	requests map[string]*clientInfo
@@ -27,16 +28,22 @@ type clientInfo struct {
 	blocked   bool
 }
 
-// New creates a new LocalStore with the given options.
-func New(options Options) *LocalStore {
-	return &LocalStore{
+// New creates a new MemStore with the given options.
+func New(options Options) *MemStore {
+	if options.CleanupInterval == 0 {
+		options.CleanupInterval = 30 * time.Minute
+	}
+
+	store := &MemStore{
 		options:  options,
 		requests: make(map[string]*clientInfo),
 	}
+	go store.cleanupExpiredEntries()
+	return store
 }
 
-// Allow checks if a client with the given key can make a request.
-func (ls *LocalStore) Allow(key string) (bool, *ratelimit.RateLimitInfo) {
+// Allow checks if the client with the given key is allowed to make a request.
+func (ls *MemStore) Allow(key string) (bool, *ratelimit.RateLimitInfo) {
 	ls.Lock()
 	defer ls.Unlock()
 
@@ -44,26 +51,25 @@ func (ls *LocalStore) Allow(key string) (bool, *ratelimit.RateLimitInfo) {
 	client, exists := ls.requests[key]
 
 	if !exists || now.After(client.resetTime) {
-		ls.requests[key] = &clientInfo{
+		client = &clientInfo{
 			remaining: ls.options.Limit,
 			resetTime: now.Add(ls.options.Rate),
 			blocked:   false,
 		}
-		client = ls.requests[key]
+		ls.requests[key] = client
 	}
 
-	if client.blocked && now.Before(client.resetTime) {
-		return false, &ratelimit.RateLimitInfo{
-			Remaining: client.remaining,
-			ResetTime: client.resetTime,
-			Blocked:   client.blocked,
+	if client.blocked {
+		if now.Before(client.resetTime) {
+			return false, &ratelimit.RateLimitInfo{
+				Remaining: client.remaining,
+				ResetTime: client.resetTime,
+				Blocked:   client.blocked,
+			}
 		}
-	}
-
-	if now.After(client.resetTime) {
+		client.blocked = false
 		client.remaining = ls.options.Limit
 		client.resetTime = now.Add(ls.options.Rate)
-		client.blocked = false
 	}
 
 	if client.remaining > 0 {
@@ -81,5 +87,20 @@ func (ls *LocalStore) Allow(key string) (bool, *ratelimit.RateLimitInfo) {
 		Remaining: client.remaining,
 		ResetTime: client.resetTime,
 		Blocked:   client.blocked,
+	}
+}
+
+// cleanupExpiredEntries periodically removes expired entries from the store.
+func (ls *MemStore) cleanupExpiredEntries() {
+	for {
+		time.Sleep(ls.options.CleanupInterval)
+		ls.Lock()
+		now := time.Now()
+		for key, client := range ls.requests {
+			if now.After(client.resetTime) {
+				delete(ls.requests, key)
+			}
+		}
+		ls.Unlock()
 	}
 }

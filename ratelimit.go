@@ -8,9 +8,9 @@ import (
 
 // RateLimitInfo contains information about rate limiting for a client.
 type RateLimitInfo struct {
-	Remaining int       // Number of remaining requests
-	ResetTime time.Time // Time when the rate limit resets
-	Blocked   bool      // Whether the client is blocked
+	Remaining int
+	ResetTime time.Time
+	Blocked   bool
 }
 
 // Store defines the interface for a rate limiting store.
@@ -18,27 +18,15 @@ type Store interface {
 	Allow(key string) (bool, *RateLimitInfo)
 }
 
-// RateLimiter manages rate limiting using a given Store.
-type RateLimiter struct {
-	store Store
-}
-
-// NewRateLimiter creates a new RateLimiter with the given store.
-func NewRateLimiter(store Store) *RateLimiter {
-	return &RateLimiter{
-		store: store,
-	}
-}
+// KeyFunc defines a function type for generating client keys.
+type KeyFunc func(r *http.Request) string
 
 // Middleware applies rate limiting to incoming requests.
-func (rl *RateLimiter) Middleware(next http.Handler, clientKey string) http.Handler {
+func Middleware(store Store, next http.Handler, keyFunc KeyFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if clientKey == "" {
-			// Use the client's IP address as the key not provided
-			clientKey = r.RemoteAddr
-		}
+		clientKey := keyFunc(r)
 
-		allowed, info := rl.store.Allow(clientKey)
+		allowed, info := store.Allow(clientKey)
 
 		// Add rate limiting headers
 		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(info.Remaining))

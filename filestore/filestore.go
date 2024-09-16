@@ -12,42 +12,49 @@ import (
 
 // Options represents the configuration options for the FileStore.
 type Options struct {
-	FilePath  string        // Path to the file where data is stored
-	Rate      time.Duration // Rate limit duration
-	Limit     int           // Number of allowed requests
-	BlockTime time.Duration // Time to block after exceeding rate limit
+	FilePath        string
+	Rate            time.Duration
+	Limit           int
+	BlockTime       time.Duration
+	CleanupInterval time.Duration
 }
 
 // FileStore holds rate limit data in a file.
 type FileStore struct {
 	options Options
-	mutex   sync.Mutex
+	mutex   sync.RWMutex
 }
 
 // New creates a new FileStore with the given options.
 func New(options Options) *FileStore {
-	return &FileStore{
+	if options.CleanupInterval == 0 {
+		options.CleanupInterval = 30 * time.Minute
+	}
+
+	fs := &FileStore{
 		options: options,
 	}
+	go fs.cleanupExpiredEntries()
+	return fs
 }
 
 // load reads the rate limit data from the file.
 func (fs *FileStore) load() (map[string]*ratelimit.RateLimitInfo, error) {
-	fs.mutex.Lock()
-	defer fs.mutex.Unlock()
+	fs.mutex.RLock()
+	defer fs.mutex.RUnlock()
 
 	file, err := os.Open(fs.options.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return make(map[string]*ratelimit.RateLimitInfo), nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
 	var data map[string]*ratelimit.RateLimitInfo
 	if err := json.NewDecoder(file).Decode(&data); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode file: %w", err)
 	}
 
 	return data, nil
@@ -60,12 +67,12 @@ func (fs *FileStore) save(data map[string]*ratelimit.RateLimitInfo) error {
 
 	file, err := os.Create(fs.options.FilePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create file: %w", err)
 	}
 	defer file.Close()
 
 	if err := json.NewEncoder(file).Encode(&data); err != nil {
-		return err
+		return fmt.Errorf("failed to encode data: %w", err)
 	}
 
 	return nil
@@ -104,4 +111,25 @@ func (fs *FileStore) Allow(key string) (bool, *ratelimit.RateLimitInfo) {
 	info.ResetTime = time.Now().Add(fs.options.BlockTime)
 	fs.save(data)
 	return false, info
+}
+
+// cleanupExpiredEntries periodically removes expired entries from the file.
+func (fs *FileStore) cleanupExpiredEntries() {
+	for {
+		time.Sleep(fs.options.CleanupInterval)
+		data, err := fs.load()
+		if err != nil {
+			fmt.Printf("Failed to load data: %v\n", err)
+			continue
+		}
+
+		now := time.Now()
+		for key, info := range data {
+			if now.After(info.ResetTime) {
+				delete(data, key)
+			}
+		}
+
+		fs.save(data)
+	}
 }

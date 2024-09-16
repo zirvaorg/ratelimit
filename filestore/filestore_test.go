@@ -7,9 +7,11 @@ import (
 )
 
 func TestFileStoreAllow(t *testing.T) {
-	filePath := "limit-db.json"
+	testFile := "test.json"
+	defer os.Remove(testFile)
+
 	store := New(Options{
-		FilePath:  filePath,
+		FilePath:  testFile,
 		Rate:      3 * time.Second,
 		Limit:     5,
 		BlockTime: 10 * time.Second,
@@ -34,14 +36,14 @@ func TestFileStoreAllow(t *testing.T) {
 	if !info.Blocked {
 		t.Fatalf("Expected to be blocked, but got not blocked")
 	}
-
-	os.Remove(filePath)
 }
 
 func TestFileStoreReset(t *testing.T) {
-	filePath := "limit-db.json"
+	testFile := "test.json"
+	defer os.Remove(testFile)
+
 	store := New(Options{
-		FilePath:  filePath,
+		FilePath:  testFile,
 		Rate:      3 * time.Second,
 		Limit:     5,
 		BlockTime: 10 * time.Second,
@@ -65,6 +67,4 @@ func TestFileStoreReset(t *testing.T) {
 	if info.Blocked {
 		t.Fatalf("Expected to be not blocked, but got blocked")
 	}
-
-	os.Remove(filePath)
 }
